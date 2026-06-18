@@ -1,0 +1,4 @@
+# autopart extension
+comment = 'Declarative RANGE auto-partitioning on INSERT for Greengage'
+default_version = '1.0'
+module_pathname = '$libdir/autopart'

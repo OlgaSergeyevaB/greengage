@@ -95,6 +95,8 @@ typedef struct CdbDispatchCmdAsync
 
 } CdbDispatchCmdAsync;
 
+post_parse_notify_hook_type post_parse_notify_hook = NULL;
+
 static void *cdbdisp_makeDispatchParams_async(int maxSlices, int largestGangSize, char *queryText, int len);
 
 static bool cdbdisp_checkAckMessage_async(struct CdbDispatcherState *ds, const char *message,
@@ -1022,6 +1024,29 @@ send_sequence_response(PGconn *conn, Oid oid, int64 last, int64 cached, int64 in
 }
 
 /*
+ * Send a response to a QE that requested on-demand partition creation.
+ *
+ * The message reuses the SEQ_NEXTVAL_QUERY_RESPONSE ('?') message type.
+ * Body layout:
+ *     [1 byte]  error flag ('t'/'f')
+ *     [N bytes] raw serialized payload (List of OidAssignment), N >= 0
+ * The payload length is recovered on the QE from the total message length.
+ */
+static inline void
+send_notify_response(PGconn *conn, const char *data, int len, bool error)
+{
+	if (pqPutMsgStart(SEQ_NEXTVAL_QUERY_RESPONSE, false, conn) < 0)
+		elog(ERROR, "Failed to send notify response: %s", PQerrorMessage(conn));
+	pqPutc(error ? SEQ_NEXTVAL_TRUE : SEQ_NEXTVAL_FALSE, conn);
+	if (!error && len > 0 && data != NULL)
+		pqPutnchar(data, len, conn);
+	if (pqPutMsgEnd(conn) < 0)
+		elog(ERROR, "Failed to send notify response: %s", PQerrorMessage(conn));
+	if (pqFlush(conn) < 0)
+		elog(ERROR, "Failed to send notify response: %s", PQerrorMessage(conn));
+}
+
+/*
  * Receive and process input from one QE.
  *
  * Return true if all input are consumed or the connection went wrong.
@@ -1240,6 +1265,35 @@ processResults(CdbDispatchResult *dispatchResult)
 
 			/* Don't free the notify here since it in queue now */
 			qnotifies = NULL;
+		}
+		else if (post_parse_notify_hook)
+		{
+			char   *data = NULL;
+			int		len = -1;
+
+			/*
+			 * Let the hook (pg_pathman) handle the notify.  It returns a
+			 * serialized payload to send back to the requesting QE, or sets
+			 * len < 0 to indicate that it did not handle this notify.
+			 */
+			PG_TRY();
+			{
+				data = post_parse_notify_hook(qnotifies->relname,
+											  qnotifies->extra, &len);
+			}
+			PG_CATCH();
+			{
+				/* Report the failure to the waiting QE before re-throwing */
+				if (len >= 0)
+					send_notify_response(segdbDesc->conn, NULL, 0, true /* error */);
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
+
+			if (len >= 0)
+				send_notify_response(segdbDesc->conn, data, len, false /* error */);
+			else if (qnotifies->relname)
+				elog(LOG, "got an unknown notify message : %s", qnotifies->relname);
 		}
 		else
 		{

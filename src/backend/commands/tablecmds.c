@@ -662,8 +662,29 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 * drop, and mark stmt->relation as RELPERSISTENCE_TEMP if a temporary
 	 * namespace is selected.
 	 */
-	namespaceId =
-		RangeVarGetAndCheckCreationNamespace(stmt->relation, NoLock, NULL);
+	{
+		Oid			existing_relation_id = InvalidOid;
+
+		namespaceId =
+			RangeVarGetAndCheckCreationNamespace(stmt->relation, NoLock,
+												 &existing_relation_id);
+
+		/*
+		 * If the relation already exists and the caller specified IF NOT
+		 * EXISTS, skip it with a NOTICE.  Upstream PostgreSQL handles this in
+		 * transformCreateStmt(), but Greengage QE nodes go straight to
+		 * DefineRelation() for dispatched CREATEs (see ProcessUtilitySlow),
+		 * so honor it here too.
+		 */
+		if (stmt->if_not_exists && OidIsValid(existing_relation_id))
+		{
+			ereport(NOTICE,
+					(errcode(ERRCODE_DUPLICATE_TABLE),
+					 errmsg("relation \"%s\" already exists, skipping",
+							stmt->relation->relname)));
+			return InvalidObjectAddress;
+		}
+	}
 
 	/*
 	 * Security check: disallow creating temp tables from security-restricted

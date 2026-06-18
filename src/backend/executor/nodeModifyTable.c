@@ -2700,7 +2700,7 @@ ExecModifyTable(PlanState *pstate)
 		{
 			case CMD_INSERT:
 				/* Prepare for tuple routing if needed. */
-				if (proute)
+				if (proute && estate->es_result_relation_info == resultRelInfo)
 					slot = ExecPrepareTupleRouting(node, estate, proute,
 												   resultRelInfo, slot);
 				slot = ExecInsert(node, slot, planSlot,

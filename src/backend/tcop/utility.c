@@ -1294,6 +1294,15 @@ ProcessUtilitySlow(ParseState *pstate,
 													 queryString, false, true,
 													 cstmt->intoPolicy);
 
+							/*
+							 * IF NOT EXISTS: the relation already existed and
+							 * DefineRelation() skipped it (returning an invalid
+							 * address), so there is nothing more to do for this
+							 * statement.
+							 */
+							if (!OidIsValid(address.objectId))
+								continue;
+
 							if (cstmt->partspec && cstmt->partspec->gpPartDef)
 							{
 								List *parts;
